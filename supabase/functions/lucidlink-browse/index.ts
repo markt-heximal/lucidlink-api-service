@@ -1,12 +1,30 @@
+// deno-lint-ignore-file no-explicit-any
+
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.49.4";
 
+const BOOT_TIME = new Date().toISOString();
+const BOOT_MONO = performance.now();
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response("ok", { headers: corsHeaders });
+  }
+
+  // ─── UPTIME ───
+  const url = new URL(req.url);
+  if (url.pathname.endsWith("/uptime") || url.searchParams.get("action") === "uptime") {
+    const elapsed = Math.round((performance.now() - BOOT_MONO) / 1000);
+    return new Response(JSON.stringify({
+      boot_time: BOOT_TIME,
+      uptime_seconds: elapsed,
+      current_time: new Date().toISOString(),
+    }), {
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
   }
 
   try {
@@ -18,7 +36,7 @@ Deno.serve(async (req) => {
     if (!LUCIDLINK_API_KEY) throw new Error("LUCIDLINK_API_KEY is not configured");
 
     const body = await req.json();
-    const { action, filespace, path, source_id, cursor, limit } = body;
+    const { action, filespace, path, cursor, limit } = body;
 
     // Auth check (skip for "test")
     const supabaseUrl = Deno.env.get("SUPABASE_URL") || "";
@@ -52,7 +70,7 @@ Deno.serve(async (req) => {
     };
 
     // Helper: resolve a path to an entry ID
-    async function resolvePathToId(fsId: string, fsPath: string): Promise<string | null> {
+    const resolvePathToId = async (fsId: string, fsPath: string): Promise<string | null> => {
       const url = `${baseUrl}/api/v1/filespaces/${fsId}/entries/resolve?path=${encodeURIComponent(fsPath)}`;
       console.log("Resolving path:", url);
       const res = await fetch(url, { headers: apiHeaders });
@@ -63,23 +81,23 @@ Deno.serve(async (req) => {
       const data = await res.json();
       // Response should contain an entry with an id
       return data?.id || data?.entryId || data?.data?.id || null;
-    }
+    };
 
     // Helper: list children of an entry
-    function extractEntries(data: any): any[] {
+    const extractEntries = (data: any): any[] => {
       if (Array.isArray(data)) return data;
       if (data?.data?.entries && Array.isArray(data.data.entries)) return data.data.entries;
       for (const key of ["data", "entries", "children", "items", "content", "results", "files"]) {
         if (data?.[key] && Array.isArray(data[key])) return data[key];
       }
       return [];
-    }
+    };
 
-    function extractCursor(data: any): string | null {
+    const extractCursor = (data: any): string | null => {
       return data?.data?.cursor || data?.cursor || data?.nextCursor || data?.next || null;
-    }
+    };
 
-    async function listChildren(fsId: string, entryId: string, limit = 100, cursor?: string): Promise<{ entries: any[]; cursor: string | null }> {
+    const listChildren = async (fsId: string, entryId: string, limit = 100, cursor?: string): Promise<{ entries: any[]; cursor: string | null }> => {
       const encodedId = encodeURIComponent(entryId);
       let url = `${baseUrl}/api/v1/filespaces/${fsId}/entries/${encodedId}/children?limit=${limit}`;
       if (cursor) url += `&cursor=${encodeURIComponent(cursor)}`;
@@ -91,7 +109,7 @@ Deno.serve(async (req) => {
       }
       const data = await res.json();
       return { entries: extractEntries(data), cursor: extractCursor(data) };
-    }
+    };
 
     // ─── LIST FILESPACES ───
     if (action === "list-filespaces") {
@@ -153,7 +171,7 @@ Deno.serve(async (req) => {
 
       // Fetch all pages for scan
       let allChildren: any[] = [];
-      let scanCursor: string | null = undefined as any;
+      let scanCursor: string | null = null;
       do {
         const result = await listChildren(filespace, entryId, 100, scanCursor || undefined);
         allChildren = allChildren.concat(result.entries);
